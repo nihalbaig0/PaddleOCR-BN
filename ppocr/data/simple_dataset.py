@@ -1,16 +1,3 @@
-# copyright (c) 2020 PaddlePaddle Authors. All Rights Reserve.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#    http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 import numpy as np
 import cv2
 import math
@@ -122,9 +109,12 @@ class SimpleDataSet(Dataset):
             data_line = self.data_lines[file_idx]
             data_line = data_line.decode("utf-8")
             substr = data_line.strip("\n").split(self.delimiter)
-            file_name = substr[0]
+            # file_name = substr[0]
+            file_and_label = substr[0].split(' ', 1)
+            file_name = file_and_label[0]
+
             file_name = self._try_parse_filename_list(file_name)
-            label = substr[1]
+            label = file_and_label[1]
             img_path = os.path.join(self.data_dir, file_name)
             data = {"img_path": img_path, "label": label}
             if not os.path.exists(img_path):
@@ -148,9 +138,12 @@ class SimpleDataSet(Dataset):
         try:
             data_line = data_line.decode("utf-8")
             substr = data_line.strip("\n").split(self.delimiter)
-            file_name = substr[0]
+            # file_name = substr[0]
+            file_and_label = substr[0].split(' ', 1)
+            file_name = file_and_label[0]
             file_name = self._try_parse_filename_list(file_name)
-            label = substr[1]
+            label = file_and_label[1]
+            # label = substr[1]
             img_path = os.path.join(self.data_dir, file_name)
             data = {"img_path": img_path, "label": label}
             if not os.path.exists(img_path):
@@ -249,9 +242,13 @@ class MultiScaleDataSet(SimpleDataSet):
         try:
             data_line = data_line.decode("utf-8")
             substr = data_line.strip("\n").split(self.delimiter)
-            file_name = substr[0]
+            file_and_label = substr[0].split(' ', 1)
+            # file_name = substr[0]
+            file_name = file_and_label[0]
             file_name = self._try_parse_filename_list(file_name)
-            label = substr[1]
+            # label = substr[1]
+            label = file_and_label[1]
+            
             img_path = os.path.join(self.data_dir, file_name)
             data = {"img_path": img_path, "label": label}
             if not os.path.exists(img_path):
