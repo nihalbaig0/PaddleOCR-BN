@@ -244,3 +244,15 @@ PaddleOCR is being oversight by a [PMC](https://github.com/PaddlePaddle/PaddleOC
 
 ## 许可证书
 本项目的发布受<a href="https://github.com/PaddlePaddle/PaddleOCR/blob/master/LICENSE">Apache 2.0 license</a>许可认证。
+
+
+## For Bangla
+
+```python -m pip install paddlepaddle-gpu==3.0.0b1 -i https://www.paddlepaddle.org.cn/packages/stable/cu118/ ```
+
+if you want to check if paddlepaddle-gpu is being installed perfectly.
+import paddle
+paddle.utils.run_check()
+
+
+python3 -m paddle.distributed.launch --gpus '0'  tools/train.py -c /home/rummanarefin.ml/paddleocr/PaddleOCR-BN/configs/rec/PP-OCRv3/en_PP-OCRv3_rec.yml -o Global.pretrained_model=/home/rummanarefin.ml/paddleocr/PaddleOCR-BN/BN_train/best_accuracy
