@@ -1,17 +1,3 @@
-# Copyright (c) 2022 PaddlePaddle Authors. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 import os
 import re
 import sys
@@ -21,9 +7,11 @@ import numpy as np
 from collections import defaultdict
 import operator
 import editdistance
+from typing import Tuple, List, Dict
+import unicodedata
 
-
-def strQ2B(ustring):
+def strQ2B(ustring: str) -> str:
+    """Convert full-width characters to half-width ones."""
     rstring = ""
     for uchar in ustring:
         inside_code = ord(uchar)
@@ -34,158 +22,184 @@ def strQ2B(ustring):
         rstring += chr(inside_code)
     return rstring
 
+def is_bangla(text: str) -> bool:
+    """Check if the text contains Bangla characters."""
+    bangla_range = range(0x0980, 0x09FF)  # Unicode range for Bangla
+    return any(ord(char) in bangla_range for char in text)
 
-def polygon_from_str(polygon_points):
-    """
-    Create a shapely polygon object from gt or dt line.
-    """
+def normalize_bangla(text: str) -> str:
+    """Normalize Bangla text by handling common variations."""
+    # Remove Zero Width Joiner and Non-Joiner
+    text = text.replace('\u200C', '').replace('\u200D', '')
+    # Normalize Unicode compositions
+    text = unicodedata.normalize('NFKC', text)
+    return text
+
+def polygon_from_str(polygon_points: List[float]) -> Polygon:
+    """Create a shapely polygon object from points."""
     polygon_points = np.array(polygon_points).reshape(4, 2)
     polygon = Polygon(polygon_points).convex_hull
     return polygon
 
+def polygon_iou(poly1: Polygon, poly2: Polygon) -> float:
+    """Calculate intersection over union between two polygons."""
+    if not poly1.intersects(poly2):
+        return 0
+    try:
+        inter_area = poly1.intersection(poly2).area
+        union_area = poly1.area + poly2.area - inter_area
+        return float(inter_area) / union_area
+    except shapely.geos.TopologicalError:
+        print("shapely.geos.TopologicalError occurred, iou set to 0")
+        return 0
 
-def polygon_iou(poly1, poly2):
+def calculate_text_similarity(gt_str: str, dt_str: str) -> int:
+    """Calculate edit distance with language-specific handling."""
+    gt_str = normalize_bangla(gt_str) if is_bangla(gt_str) else gt_str
+    dt_str = normalize_bangla(dt_str) if is_bangla(dt_str) else dt_str
+    return editdistance.eval(gt_str, dt_str)
+
+def e2e_eval(gt_dir: str, res_dir: str, ignore_blank: bool = False, language: str = 'mixed') -> Dict[str, float]:
     """
-    Intersection over union between two shapely polygons.
+    End-to-end evaluation for OCR results.
+    
+    Args:
+        gt_dir: Ground truth directory
+        res_dir: Results directory
+        ignore_blank: Whether to ignore blank spaces
+        language: 'bangla', 'english', or 'mixed'
     """
-    if not poly1.intersects(poly2):  # this test is fast and can accelerate calculation
-        iou = 0
-    else:
-        try:
-            inter_area = poly1.intersection(poly2).area
-            union_area = poly1.area + poly2.area - inter_area
-            iou = float(inter_area) / union_area
-        except shapely.geos.TopologicalError:
-            # except Exception as e:
-            #     print(e)
-            print("shapely.geos.TopologicalError occurred, iou set to 0")
-            iou = 0
-    return iou
-
-
-def ed(str1, str2):
-    return editdistance.eval(str1, str2)
-
-
-def e2e_eval(gt_dir, res_dir, ignore_blank=False):
-    print("start testing...")
+    print(f"Starting evaluation for {language} OCR...")
     iou_thresh = 0.5
     val_names = os.listdir(gt_dir)
-    num_gt_chars = 0
-    gt_count = 0
-    dt_count = 0
-    hit = 0
-    ed_sum = 0
+    stats = {
+        'num_gt_chars': 0,
+        'gt_count': 0,
+        'dt_count': 0,
+        'hit': 0,
+        'ed_sum': 0,
+        'bangla_count': 0,
+        'english_count': 0
+    }
 
-    for i, val_name in enumerate(val_names):
+    for val_name in val_names:
+        # Read ground truth
         with open(os.path.join(gt_dir, val_name), encoding="utf-8") as f:
             gt_lines = [o.strip() for o in f.readlines()]
+        
         gts = []
         ignore_masks = []
         for line in gt_lines:
             parts = line.strip().split("\t")
-            # ignore illegal data
             if len(parts) < 9:
                 continue
-            assert len(parts) < 11
-            if len(parts) == 9:
-                gts.append(parts[:8] + [""])
-            else:
-                gts.append(parts[:8] + [parts[-1]])
-
+            gts.append(parts[:8] + [parts[9] if len(parts) == 10 else ""])
             ignore_masks.append(parts[8])
 
+        # Read detection results
         val_path = os.path.join(res_dir, val_name)
         if not os.path.exists(val_path):
             dt_lines = []
         else:
             with open(val_path, encoding="utf-8") as f:
                 dt_lines = [o.strip() for o in f.readlines()]
+        
         dts = []
         for line in dt_lines:
-            # print(line)
             parts = line.strip().split("\t")
-            assert len(parts) < 10, "line error: {}".format(line)
-            if len(parts) == 8:
-                dts.append(parts + [""])
-            else:
-                dts.append(parts)
+            dts.append(parts[:8] + [parts[8] if len(parts) == 9 else ""])
 
+        # Match detections with ground truth
         dt_match = [False] * len(dts)
         gt_match = [False] * len(gts)
         all_ious = defaultdict(tuple)
+
+        # Calculate IOUs
         for index_gt, gt in enumerate(gts):
-            gt_coors = [float(gt_coor) for gt_coor in gt[0:8]]
-            gt_poly = polygon_from_str(gt_coors)
+            gt_poly = polygon_from_str([float(x) for x in gt[0:8]])
             for index_dt, dt in enumerate(dts):
-                dt_coors = [float(dt_coor) for dt_coor in dt[0:8]]
-                dt_poly = polygon_from_str(dt_coors)
+                dt_poly = polygon_from_str([float(x) for x in dt[0:8]])
                 iou = polygon_iou(dt_poly, gt_poly)
                 if iou >= iou_thresh:
                     all_ious[(index_gt, index_dt)] = iou
-        sorted_ious = sorted(all_ious.items(), key=operator.itemgetter(1), reverse=True)
-        sorted_gt_dt_pairs = [item[0] for item in sorted_ious]
 
-        # matched gt and dt
-        for gt_dt_pair in sorted_gt_dt_pairs:
-            index_gt, index_dt = gt_dt_pair
-            if gt_match[index_gt] == False and dt_match[index_dt] == False:
-                gt_match[index_gt] = True
-                dt_match[index_dt] = True
+        # Sort and match pairs
+        for index_gt, index_dt in sorted(all_ious.items(), key=operator.itemgetter(1), reverse=True):
+            if not gt_match[index_gt[0]] and not dt_match[index_dt[0]]:
+                gt_match[index_gt[0]] = True
+                dt_match[index_dt[0]] = True
+                
+                gt_str = strQ2B(gts[index_gt[0]][8])
+                dt_str = strQ2B(dts[index_dt[0]][8])
+                
                 if ignore_blank:
-                    gt_str = strQ2B(gts[index_gt][8]).replace(" ", "")
-                    dt_str = strQ2B(dts[index_dt][8]).replace(" ", "")
-                else:
-                    gt_str = strQ2B(gts[index_gt][8])
-                    dt_str = strQ2B(dts[index_dt][8])
-                if ignore_masks[index_gt] == "0":
-                    ed_sum += ed(gt_str, dt_str)
-                    num_gt_chars += len(gt_str)
+                    gt_str = gt_str.replace(" ", "")
+                    dt_str = dt_str.replace(" ", "")
+
+                if ignore_masks[index_gt[0]] == "0":
+                    ed = calculate_text_similarity(gt_str, dt_str)
+                    stats['ed_sum'] += ed
+                    stats['num_gt_chars'] += len(gt_str)
+                    
                     if gt_str == dt_str:
-                        hit += 1
-                    gt_count += 1
-                    dt_count += 1
+                        stats['hit'] += 1
+                    
+                    stats['gt_count'] += 1
+                    stats['dt_count'] += 1
+                    
+                    if is_bangla(gt_str):
+                        stats['bangla_count'] += 1
+                    else:
+                        stats['english_count'] += 1
 
-        # unmatched dt
-        for tindex, dt_match_flag in enumerate(dt_match):
-            if dt_match_flag == False:
-                dt_str = dts[tindex][8]
-                gt_str = ""
-                ed_sum += ed(dt_str, gt_str)
-                dt_count += 1
+        # Handle unmatched detections and ground truths
+        for i, matched in enumerate(dt_match):
+            if not matched:
+                stats['ed_sum'] += len(dts[i][8])
+                stats['dt_count'] += 1
 
-        # unmatched gt
-        for tindex, gt_match_flag in enumerate(gt_match):
-            if gt_match_flag == False and ignore_masks[tindex] == "0":
-                dt_str = ""
-                gt_str = gts[tindex][8]
-                ed_sum += ed(gt_str, dt_str)
-                num_gt_chars += len(gt_str)
-                gt_count += 1
+        for i, matched in enumerate(gt_match):
+            if not matched and ignore_masks[i] == "0":
+                stats['ed_sum'] += len(gts[i][8])
+                stats['num_gt_chars'] += len(gts[i][8])
+                stats['gt_count'] += 1
 
+    # Calculate metrics
     eps = 1e-9
-    print("hit, dt_count, gt_count", hit, dt_count, gt_count)
-    precision = hit / (dt_count + eps)
-    recall = hit / (gt_count + eps)
-    fmeasure = 2.0 * precision * recall / (precision + recall + eps)
-    avg_edit_dist_img = ed_sum / len(val_names)
-    avg_edit_dist_field = ed_sum / (gt_count + eps)
-    character_acc = 1 - ed_sum / (num_gt_chars + eps)
+    metrics = {}
+    metrics['precision'] = stats['hit'] / (stats['dt_count'] + eps) * 100
+    metrics['recall'] = stats['hit'] / (stats['gt_count'] + eps) * 100
+    metrics['f_measure'] = 2 * metrics['precision'] * metrics['recall'] / (metrics['precision'] + metrics['recall'] + eps)
+    metrics['character_accuracy'] = (1 - stats['ed_sum'] / (stats['num_gt_chars'] + eps)) * 100
+    metrics['avg_edit_dist_per_img'] = stats['ed_sum'] / len(val_names)
+    metrics['avg_edit_dist_per_field'] = stats['ed_sum'] / (stats['gt_count'] + eps)
+    
+    # Print results
+    print("\nEvaluation Results:")
+    print(f"Total Images Processed: {len(val_names)}")
+    print(f"Bangla Text Fields: {stats['bangla_count']}")
+    print(f"English Text Fields: {stats['english_count']}")
+    print(f"Character Accuracy: {metrics['character_accuracy']:.2f}%")
+    print(f"Average Edit Distance per Field: {metrics['avg_edit_dist_per_field']:.2f}")
+    print(f"Average Edit Distance per Image: {metrics['avg_edit_dist_per_img']:.2f}")
+    print(f"Precision: {metrics['precision']:.2f}%")
+    print(f"Recall: {metrics['recall']:.2f}%")
+    print(f"F-measure: {metrics['f_measure']:.2f}%")
 
-    print("character_acc: %.2f" % (character_acc * 100) + "%")
-    print("avg_edit_dist_field: %.2f" % (avg_edit_dist_field))
-    print("avg_edit_dist_img: %.2f" % (avg_edit_dist_img))
-    print("precision: %.2f" % (precision * 100) + "%")
-    print("recall: %.2f" % (recall * 100) + "%")
-    print("fmeasure: %.2f" % (fmeasure * 100) + "%")
-
+    return metrics
 
 if __name__ == "__main__":
-    # if len(sys.argv) != 3:
-    #     print("python3 ocr_e2e_eval.py gt_dir res_dir")
-    #     exit(-1)
-    # gt_folder = sys.argv[1]
-    # pred_folder = sys.argv[2]
+    if len(sys.argv) != 4:
+        print("Usage: python3 ocr_e2e_eval.py <gt_dir> <res_dir> <language>")
+        print("language options: bangla, english, mixed")
+        sys.exit(1)
+
     gt_folder = sys.argv[1]
     pred_folder = sys.argv[2]
-    e2e_eval(gt_folder, pred_folder)
+    language = sys.argv[3].lower()
+    
+    if language not in ['bangla', 'english', 'mixed']:
+        print("Error: language must be 'bangla', 'english', or 'mixed'")
+        sys.exit(1)
+        
+    e2e_eval(gt_folder, pred_folder, language=language)
